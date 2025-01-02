@@ -1,5 +1,8 @@
+from robots.red import Red
+
 import gym
 import numpy as np
+import math
 
 
 class GroupBehaviorStrategyEnv(gym.Env):
@@ -27,7 +30,9 @@ class GroupBehaviorStrategyEnv(gym.Env):
   INITIAL_K_D   = 1.0 # k_d_0
   INITIAL_K_E   = 1.0 # k_e_0
   INIT_POSITION = [10.0, 10.0] # 初期位置(y, x)
-  FOLLOWER_NUM  = 10 # 追従者の数
+  # ----- follower parameter -----
+  FOLLOWER_NUM             = 10 # 追従者の数
+  FOLLOWER_POSITION_OFFSET = 5.0 # 追従者の初期位置のオフセット
 
 
   def __init__(self) -> None:
@@ -78,7 +83,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
 
     # leader_collision_point
     leader_low = np.array([0.0, 0.0])  # y >= 0, x >= 0
-    leader_high = np.array([self.ENV_HIGHT, self.ENV_WIDTH])  # y < ENV_HEIGHT, x < ENV_WIDTH
+    leader_high = np.array([self.ENV_HEIGHT, self.ENV_WIDTH])  # y < ENV_HEIGHT, x < ENV_WIDTH
     leader_collision_point_space = gym.spaces.Box(low=leader_low, high=leader_high, shape=(2,), dtype=np.float32)
 
     # Combine all spaces into a dictionary space
@@ -105,8 +110,14 @@ class GroupBehaviorStrategyEnv(gym.Env):
     self.agent_trajectory = [self.agent_position.copy()] # 軌跡の初期化
     self.env_frames       = [] # 描画用のフレームの初期化
 
-    # TODO フォロワーのポジションの追加
-    # self.follower_positions = [self.INIT_POSITION.copy() for _ in range(self.FOLLOWER_NUM)] # フォロワーの位置情報の初期化
+    # フォロワーの追加
+    self.follower_robots = [Red(
+        id=f'follower_{index}',
+        env=self,
+        agent_position=self.agent_position,
+        x=self.agent_position[1] + self.FOLLOWER_POSITION_OFFSET * math.cos((2 * math.pi * index / (self.FOLLOWER_NUM))),
+        y=self.agent_position[0] + self.FOLLOWER_POSITION_OFFSET * math.sin((2 * math.pi * index / (self.FOLLOWER_NUM))),
+    ) for index in range(self.FOLLOWER_NUM)] 
 
 
   def _reset(self) -> None:
@@ -118,6 +129,13 @@ class GroupBehaviorStrategyEnv(gym.Env):
     self.explored_area = 0 # 探査済みエリアの初期化
     self.explored_map.fill(0) # 探査済みマップの初期化
     self.previous_explored_area = 0.0 # 1ステップ前の探査率の初期化
+    self.follower_robots = [Red(
+        id=f'follower_{index}',
+        env=self,
+        agent_position=self.agent_position,
+        x=self.agent_position[1] + self.FOLLOWER_POSITION_OFFSET * math.cos((2 * math.pi * index / (self.FOLLOWER_NUM))),
+        y=self.agent_position[0] + self.FOLLOWER_POSITION_OFFSET * math.sin((2 * math.pi * index / (self.FOLLOWER_NUM))),
+    ) for index in range(self.FOLLOWER_NUM)] # フォロワーの初期化
 
 
   def _render(self, mode='human'):
