@@ -33,9 +33,12 @@ class GroupBehaviorStrategyEnv(gym.Env):
   VARIANCE        = 10.0  # 探査中心の分散
   OBSTACLE_VALUE  = 1000  # 障害物値
   # ----- reward parameter -----
-  REWARD_DEFAULT            = 50    # デフォルト報酬 # TODO　これだと行ったり来たりするだけで報酬がもらえる
+  REWARD_DEFAULT            = -1    # デフォルト報酬 # TODO　これだと行ったり来たりするだけで報酬がもらえる
   REWARD_LEADER_COLLISION   = -100  # 衝突時の報酬
   REWARD_FOLLOWER_COLLISION = -1    # 追従者の衝突時の報酬
+  REWARD_EXPLORATION        = 30     # 探査報酬
+  # ----- finish parameter -----
+  FINISH_EXPLORED_RATE = 0.95 # 探査率の終了条件
   # ----- initial parameter -----
   INITIAL_B     = 0.5 # B_0
   INITIAL_K_D   = 1.0 # k_d_0
@@ -160,8 +163,94 @@ class GroupBehaviorStrategyEnv(gym.Env):
       pass
 
   def _step(self, action):
-    # return super().step(action)
-    pass
+    """
+    action:
+      parameter B of the policy (continuity)    | (0 <= B <= 1): float
+      parameter k_d of the policy (continuity)  | (0 <= k_d < inf): float
+      parameter k_e of the policy (continuity)  | (0 <= k_e < inf): float
+    """
+    # actionの取得
+    B = action["B"]
+    k_d = action["k_d"]
+    k_e = action["k_e"]
+    
+    # TODO 走行可能性の確率分布の生成
+    # TODO 探査向上性の確率分布の生成
+    # TODO 最終的な確率分布を生成
+
+    dx = self.OUTER_BOUNDARY * np.cos(np.radians(theta))
+    dy = self.OUTER_BOUNDARY * np.sin(np.radians(theta))
+
+    self.agent_position, collision_flag = self.next_position(dy, dx)
+    self.agent_trajectory.append(self.agent_position.copy())
+
+    # TODO フォロワーの探査行動
+    
+    # 報酬計算
+    reward = self.REWARD_DEFAULT
+    if collision_flag:
+      # リーダーが障害物に衝突した場合
+      reward += self.REWARD_LEADER_COLLISION
+    else:
+      # 探査率の計算
+      exploration_rate = self.explored_area / self.total_area
+      if exploration_rate > self.previous_explored_area:
+        # 探査率が上昇した場合
+        reward += self.REWARD_EXPLORATION
+    
+    # TODO フォロワーの報酬計算
+
+    # 終了条件
+    turncated = False # TODO エピソードが途中で終了した場合
+    done = self.explored_area >= self.total_area * self.FINISH_EXPLORED_RATE # 探査率が一定以上になった場合
+
+    return self.agent_position, reward, done, turncated, {} # TODO infoを返す必要があるかも
+  
+
+  def next_position(self, dy, dx) -> tuple[np.ndarray, bool]:
+    """
+    障害物判定と次の移動先次を計算
+    """
+    # SAMPLING_NUM = 1000 # 軌跡線分のサンプリング数
+    SAMPLING_NUM = max(150, int(np.ceil(np.linalg.norm([dy, dx]) * 10)))
+    SAFE_DISTANCE = 1.0 # マップの安全距離
+    collision_flag = False # 障害物判定フラグ
+
+    for i in range(1, SAMPLING_NUM + 1):
+      intermediate_position = np.array([
+        self.agent_position[0] + (dy * i / SAMPLING_NUM),
+        self.agent_position[1] + (dx * i / SAMPLING_NUM)
+      ])
+
+      # マップ内か判断
+      if (0 < intermediate_position[0] < self.ENV_HEIGHT) and (0 < intermediate_position[1] < self.ENV_WIDTH):
+        # サンプリング点が障害物でないか判断
+        map_y = int(intermediate_position[0])
+        map_x = int(intermediate_position[1])
+
+        if self.map[map_y, map_x] == self.OBSTACLE_VALUE:  # 障害物
+          print(f"Obstacle collided at : {intermediate_position}")
+          collision_flag = True
+
+          # 障害物に衝突する事前位置を計算
+          collision_position = intermediate_position
+          direction_vector = collision_position - self.agent_position
+          norm_direction_vector = np.linalg.norm(direction_vector)
+
+          # if norm_direction_vector > SAFE_DISTANCE:
+          #     stop_position = self.agent_position + (direction_vector / norm_direction_vector) * (norm_direction_vector - SAFE_DISTANCE)
+          #     return stop_position
+          # else:
+          #     # 移動距離が安全距離より短い場合はそのまま停止
+          #     return self.agent_position
+          stop_position = self.agent_position + (direction_vector / norm_direction_vector) * (norm_direction_vector - SAFE_DISTANCE)
+
+        return stop_position, collision_flag
+      
+      else:
+        continue
+
+    return self.agent_position + np.array([dy, dx]), collision_flag
 
   
   def _close(self):
@@ -186,3 +275,14 @@ class GroupBehaviorStrategyEnv(gym.Env):
     self.map[30:, 40]     = self.OBSTACLE_VALUE
     self.map[:40, 70]     = self.OBSTACLE_VALUE
     self.map[20:40, 100]  = self.OBSTACLE_VALUE
+  
+
+  def get_drivability(self):
+    """
+    走行可能性の確率分布を生成
+    """
+    for follower in self.follower_robots:
+      pass
+  
+
+  

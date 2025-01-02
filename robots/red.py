@@ -54,6 +54,7 @@ class Red():
         self.boids_flag: int                = boids_flag
         self.estimated_probability: float   = estimated_probability
         self.data = self.get_arguments()
+        self.one_explore_data = self.get_arguments()
     
 
     def get_arguments(self):
@@ -262,6 +263,7 @@ class Red():
         self.step += 1
 
         self.data = pd.concat([self.data, self.get_arguments()])
+        self.one_explore_data = pd.concat([self.one_explore_data, self.get_arguments()])
     
 
     def change_agent_state(self, agent_position) -> None:
@@ -269,6 +271,29 @@ class Red():
         エージェントの状態が変化した場合
         """
         self.agent_position = agent_position
+        self.one_explore_data = self.get_arguments()
+    
+
+    def calculate_collision_stats(self) -> dict:
+        """
+        衝突統計量の計算
+        """
+        collision_data = self.data[self.data['collision_flag'] == True]
+
+        if not collision_data.empty:
+            mean_y = collision_data['y'].mean()
+            mean_x = collision_data['x'].mean()
+
+            covariance = collision_data[['y', 'x']].cov().values
+        
+        collision_stats = {
+            'red_id'  : self.id,
+            'count'   : collision_data.shape[0],
+            'mean'    : np.array([mean_y, mean_x]),
+            'cov'     : covariance
+        }
+
+        return collision_stats
         
 
     def __str__(self):
