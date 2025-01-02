@@ -3,6 +3,17 @@ from robots.red import Red
 import gym
 import numpy as np
 import math
+import sqlalchemy
+import os
+from dotenv import load_dotenv
+
+# TODO 場所を変える必要あるかも
+# .envファイルの読み込み
+load_dotenv()
+
+# データベース接続の設定
+DATABASE_URL = os.getenv("DATABASE_URL")
+engine = sqlalchemy.create_engine(DATABASE_URL)
 
 
 class GroupBehaviorStrategyEnv(gym.Env):
