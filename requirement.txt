@@ -1,0 +1,7 @@
+gym==0.26.2
+numpy==1.26.3
+matplotlib==3.8.3
+pandas==2.1.1
+sqlalchemy==2.0.21
+psycopg2-binary==2.0.36
+python-dotenv==1.0.1
