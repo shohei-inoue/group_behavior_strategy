@@ -6,6 +6,7 @@ import math
 import sqlalchemy
 import os
 from dotenv import load_dotenv
+from scipy.stats import vonmises
 
 # TODO 場所を変える必要あるかも
 # .envファイルの読み込み
@@ -39,6 +40,9 @@ class GroupBehaviorStrategyEnv(gym.Env):
   REWARD_EXPLORATION        = 30     # 探査報酬
   # ----- finish parameter -----
   FINISH_EXPLORED_RATE = 0.95 # 探査率の終了条件
+  # ----- Von Mises distribution parameter -----
+  KAPPA = 1.0 # 逆温度
+  ANGLES = np.linspace(0, 2 * np.pi, 360) # 角度
   # ----- initial parameter -----
   INITIAL_B     = 0.5 # B_0
   INITIAL_K_D   = 1.0 # k_d_0
@@ -174,7 +178,8 @@ class GroupBehaviorStrategyEnv(gym.Env):
     k_d = action["k_d"]
     k_e = action["k_e"]
     
-    # TODO 走行可能性の確率分布の生成
+    # 走行可能性の確率分布の生成
+    drivability = self.get_drivability(k_d)
     # TODO 探査向上性の確率分布の生成
     # TODO 最終的な確率分布を生成
 
@@ -251,6 +256,78 @@ class GroupBehaviorStrategyEnv(gym.Env):
         continue
 
     return self.agent_position + np.array([dy, dx]), collision_flag
+  
+
+  def get_drivability(self, k_d) -> np.ndarray:
+    """
+    走行可能性の確率分布の生成
+    """
+    pdf_list = []
+    combined_pdf = np.zeros_like(self.ANGLES)
+
+    for follower in self.follower_robots:
+      data = follower.calculate_collision_stats() # red_id, count, mean, variance
+      azimuth = self.calculate_follower_azimuth(data['mean'])
+
+      count = data['count']
+      covariance = data['cov']
+      kappa = self.calculate_kappa(count, covariance, k_d) # 逆温度の計算
+
+      follower_pdf = vonmises.pdf(self.ANGLES, kappa, loc=azimuth) # フォロワーの確率分布
+      follower_pdf /= np.sum(follower_pdf) # 正規化
+
+      # 分布を反転
+      follower_pdf = 1 - follower_pdf
+      follower_pdf /= np.sum(follower_pdf) # 正規化
+
+      pdf_list.append({
+        "id": data['red_id'],
+        "pdf": follower_pdf
+      })
+      combined_pdf += follower_pdf
+    
+    if combined_pdf.sum() == 0:
+      # 衝突データが存在しない場合
+      print("No collision data. using uniform distribution.")
+    else:
+      combined_pdf /= np.sum(combined_pdf)
+    
+    # TODO 走行可能性の確率分布のレンダリング
+
+    return combined_pdf
+  
+
+  def calculate_follower_azimuth(self, follower_position: np.ndarray) -> float:
+    """
+    リーダー機から見たフォロワー機の方位角を計算
+    障害物情報の中心となる方位角を計算
+    """
+    if follower_position is not None:
+      # 現在位置と前の位置の差分を計算
+      dy = follower_position[0] - self.state[0]
+      dx = follower_position[1] - self.state[1]
+
+      # atan2で方位角を計算
+      azimuth = math.atan2(dy, dx)
+
+      # 0~2πに正規化
+      if azimuth < 0:
+        azimuth += 2 * math.pi
+    else:
+      azimuth = None
+
+    return azimuth 
+  
+
+  def calculate_kappa(self, count, covariance, k_d):
+    """
+    逆温度の計算
+    TODO 改良の余地あり
+    """
+    if covariance == 0:
+      return np.inf # 分散が0の場合は無限大
+    
+    return k_d * (count / covariance)
 
   
   def _close(self):
@@ -275,14 +352,6 @@ class GroupBehaviorStrategyEnv(gym.Env):
     self.map[30:, 40]     = self.OBSTACLE_VALUE
     self.map[:40, 70]     = self.OBSTACLE_VALUE
     self.map[20:40, 100]  = self.OBSTACLE_VALUE
-  
-
-  def get_drivability(self):
-    """
-    走行可能性の確率分布を生成
-    """
-    for follower in self.follower_robots:
-      pass
   
 
   

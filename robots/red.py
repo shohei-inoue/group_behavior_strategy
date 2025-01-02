@@ -277,6 +277,12 @@ class Red():
     def calculate_collision_stats(self) -> dict:
         """
         衝突統計量の計算
+        Returns
+            collision_stats: dict
+              red_id: str
+              count: int
+              mean: np.array
+              cov: np.array
         """
         collision_data = self.data[self.data['collision_flag'] == True]
 
