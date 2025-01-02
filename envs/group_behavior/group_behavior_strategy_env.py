@@ -33,6 +33,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
   MEAN            = 0.0   # 探査中心の平均
   VARIANCE        = 10.0  # 探査中心の分散
   OBSTACLE_VALUE  = 1000  # 障害物値
+  FOLLOWER_STEP   = 100   # フォロワーのステップ数
   # ----- reward parameter -----
   REWARD_DEFAULT            = -1    # デフォルト報酬 # TODO　これだと行ったり来たりするだけで報酬がもらえる
   REWARD_LEADER_COLLISION   = -100  # 衝突時の報酬
@@ -124,9 +125,10 @@ class GroupBehaviorStrategyEnv(gym.Env):
     self.explored_area = 0 # 探査済みエリア
     self.previous_explored_area = 0.0 # 1ステップ前の探査率
 
-    self.agent_position   = self.INIT_POSITION # 位置情報の初期化
-    self.agent_trajectory = [self.agent_position.copy()] # 軌跡の初期化
-    self.env_frames       = [] # 描画用のフレームの初期化
+    self.agent_position           = self.INIT_POSITION # 位置情報の初期化
+    self.previous_agent_position  = None # 1ステップ前の位置情報
+    self.agent_trajectory         = [self.agent_position.copy()] # 軌跡の初期化
+    self.env_frames               = [] # 描画用のフレームの初期化
 
     # フォロワーの追加
     self.follower_robots = [Red(
@@ -180,8 +182,12 @@ class GroupBehaviorStrategyEnv(gym.Env):
     
     # 走行可能性の確率分布の生成
     drivability = self.get_drivability(k_d)
-    # TODO 探査向上性の確率分布の生成
-    # TODO 最終的な確率分布を生成
+    # 探査向上性の確率分布の生成
+    exploration_improvement = self.get_exploration_improvement(k_e)
+    # 最終的な確率分布を生成
+    output_pdf = B * drivability + (1 - B) * exploration_improvement
+    # 確率分布から次の移動方向を決定
+    theta = np.random.choice(self.ANGLES, p=output_pdf)
 
     dx = self.OUTER_BOUNDARY * np.cos(np.radians(theta))
     dy = self.OUTER_BOUNDARY * np.sin(np.radians(theta))
@@ -190,6 +196,14 @@ class GroupBehaviorStrategyEnv(gym.Env):
     self.agent_trajectory.append(self.agent_position.copy())
 
     # TODO フォロワーの探査行動
+
+    for step in range(self.FOLLOWER_STEP):
+      for index in range(self.follower_robots):
+        previous_position = self.follower_robots[index].point
+        self.follower_robots[index].step_motion()
+
+      # TODO マップの更新
+      # self._render()
     
     # 報酬計算
     reward = self.REWARD_DEFAULT
@@ -297,6 +311,30 @@ class GroupBehaviorStrategyEnv(gym.Env):
     return combined_pdf
   
 
+  def get_exploration_improvement(self, k_e) -> np.ndarray:
+    """
+    探査向上性の確率分布の生成
+    """
+    mu = self.calculate_previous_azimuth()
+    combined_pdf = np.zeros_like(self.ANGLES)
+
+    if mu is not None:
+      previous_state_pdf = vonmises.pdf(self.ANGLES, self.KAPPA, loc=mu) # 前回の状態から得られる確率分布
+      previous_state_pdf /= np.sum(previous_state_pdf)
+      combined_pdf += previous_state_pdf
+    else:
+      print("No previous state.")
+    
+    # 衝突があった場合, 衝突方向の確率分布を下げる
+    # TODO collision_flagをobservation_spaceに追加するか検討
+    # TODO 最終的な正規化
+
+    
+    # TODO 探査向上性の確率分布のレンダリング
+    
+    return previous_state_pdf
+
+
   def calculate_follower_azimuth(self, follower_position: np.ndarray) -> float:
     """
     リーダー機から見たフォロワー機の方位角を計算
@@ -328,6 +366,27 @@ class GroupBehaviorStrategyEnv(gym.Env):
       return np.inf # 分散が0の場合は無限大
     
     return k_d * (count / covariance)
+  
+
+  def calculate_previous_azimuth(self) -> float:
+    """
+    前回の方位角を計算
+    """
+    if self.previous_agent_position is not None:
+      # 現在位置と前の位置の差分を計算
+      dy = self.agent_position[0] - self.previous_agent_position[0]
+      dx = self.agent_position[1] - self.previous_agent_position[1]
+
+      # atan2で方位角を計算
+      azimuth = math.atan2(dy, dx)
+
+      # 0~2πに正規化
+      if azimuth < 0:
+        azimuth += 2 * math.pi
+    else:
+      azimuth = None
+    
+    return azimuth
 
   
   def _close(self):
