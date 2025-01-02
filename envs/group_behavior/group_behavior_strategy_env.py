@@ -159,6 +159,13 @@ class GroupBehaviorStrategyEnv(gym.Env):
 
 
   def _render(self, mode='human'):
+    """
+    render the environment
+    TODO マップの描画
+    TODO フォロワーの描画
+    TODO リーダーの描画
+    TODO pdfの描画
+    """
     if mode == 'rgb_array':
       # return np.array([])
       pass
