@@ -100,10 +100,11 @@ class GroupBehaviorStrategyEnv(gym.Env):
         "value": gym.spaces.Box(low=0.0, high=2 * np.pi, shape=(), dtype=np.float32),  # mean in range (0, 2*pi)
         "is_none": gym.spaces.Discrete(2)  # 0 if not None, 1 if None
       }),
-      "variance": gym.spaces.Dict({
-        "value": gym.spaces.Box(low=0.0, high=np.inf, shape=(), dtype=np.float32),  # variance >= 0
+      "covariance": gym.spaces.Dict({
+        "value": gym.spaces.Box(low=0.0, high=np.inf, shape=(), dtype=np.float32),  # covariance >= 0
         "is_none": gym.spaces.Discrete(2)  # 0 if not None, 1 if None
-      })
+      }),
+      "count": gym.spaces.Box(low=0, high=np.inf, shape=(), dtype=np.int32)
     })
     follower_collision_info_space = gym.spaces.Tuple([follower_collision_info_template] * self.FOLLOWER_NUM)
 
@@ -162,7 +163,8 @@ class GroupBehaviorStrategyEnv(gym.Env):
     follower_collision_info_list = tuple(
       {
         "mean": {"value": 0.0, "is_none": 1},       # mean は None
-        "variance": {"value": 0.0, "is_none": 1}   # variance も None
+        "covariance": {"value": 0.0, "is_none": 1},   # covariance も None
+        "count": 0
       }
       for _ in range(self.FOLLOWER_NUM)
     )
@@ -209,7 +211,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
     follower_collision_info_list = tuple(
       {
         "mean": {"value": 0.0, "is_none": 1},       # mean は None
-        "variance": {"value": 0.0, "is_none": 1}   # variance も None
+        "covariance": {"value": 0.0, "is_none": 1}   # covariance も None
       }
       for _ in range(self.FOLLOWER_NUM)
     )
@@ -457,8 +459,8 @@ class GroupBehaviorStrategyEnv(gym.Env):
     k_e = action["k_e"]
     
     self.result_pdf_list = [] # 結合確率分布の初期化
-    # 走行可能性の確率分布の生成
-    drivability = self.get_drivability(k_d)
+    # 走行可能性の確率分布の生成, フォロワーの衝突情報の取得
+    drivability, follower_collision_info_list = self.get_drivability(k_d)
     self.result_pdf_list.append({
       "id": "drivability",
       "pdf": drivability,
@@ -490,6 +492,18 @@ class GroupBehaviorStrategyEnv(gym.Env):
     self.agent_position, collision_flag = self.next_position(dy, dx)
     self.agent_trajectory.append(self.agent_position.copy())
 
+    # leader_collision_pointの獲得
+    if collision_flag:
+      leader_collision_point = {
+        "value": self.agent_position,
+        "is_none": 0
+      }
+    else:
+      leader_collision_point = {
+        "value": np.array([0.0, 0.0], dtype=np.float32),
+        "is_none": 1
+      }
+
     # フォロワーの探査行動
     for _ in range(self.FOLLOWER_STEP):
       for index in range(self.follower_robots):
@@ -518,7 +532,15 @@ class GroupBehaviorStrategyEnv(gym.Env):
     turncated = False # TODO エピソードが途中で終了した場合
     done = self.explored_area >= self.total_area * self.FINISH_EXPLORED_RATE # 探査率が一定以上になった場合
 
-    return self.agent_position, reward, done, turncated, {} # TODO infoを返す必要があるかも
+    self.state = {
+      "follower_collision_info_list": follower_collision_info_list,
+      "leader_collision_point": leader_collision_point,
+      "B": B,
+      "k_d": k_d,
+      "k_e": k_e
+    }
+
+    return self.state, reward, done, turncated, {} # TODO infoを返す必要があるかも
   
 
   def next_position(self, dy, dx) -> tuple[np.ndarray, bool]:
@@ -572,10 +594,18 @@ class GroupBehaviorStrategyEnv(gym.Env):
     走行可能性の確率分布の生成
     """
     self.drivability_pdf_list = []
+    follower_collision_info_list = []
     combined_pdf = np.zeros_like(self.ANGLES)
 
     for follower in self.follower_robots:
       data = follower.calculate_collision_stats() # red_id, count, mean, variance
+      collision_info = {
+        "mean": {"value": data['mean'], "is_none": 0 if data['mean'] is not 0 else 1},
+        "covariance": {"value": data['cov'], "is_none": 0 if data['cov'] is not 0 else 1},
+        "count": data['count']
+      }
+      follower_collision_info_list.append(collision_info)
+
       azimuth = self.calculate_follower_azimuth(data['mean'])
 
       count = data['count']
@@ -610,7 +640,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
       "lineWidth": 2
     })
 
-    return combined_pdf
+    return combined_pdf, follower_collision_info_list
   
 
   def get_exploration_improvement(self, k_e) -> np.ndarray:
