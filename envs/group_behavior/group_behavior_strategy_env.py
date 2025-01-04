@@ -45,7 +45,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
   REWARD_DEFAULT            = -1    # デフォルト報酬 # TODO　これだと行ったり来たりするだけで報酬がもらえる
   REWARD_LEADER_COLLISION   = -100  # 衝突時の報酬
   REWARD_FOLLOWER_COLLISION = -1    # 追従者の衝突時の報酬
-  REWARD_EXPLORATION        = 30     # 探査報酬
+  REWARD_EXPLORATION        = 50     # 探査報酬
   # ----- finish parameter -----
   FINISH_EXPLORED_RATE = 0.95 # 探査率の終了条件
   # ----- Von Mises distribution parameter -----
