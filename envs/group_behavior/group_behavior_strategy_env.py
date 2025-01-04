@@ -42,7 +42,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
   OBSTACLE_VALUE  = 1000  # 障害物値
   FOLLOWER_STEP   = 100   # フォロワーのステップ数
   # ----- reward parameter -----
-  REWARD_DEFAULT            = -1    # デフォルト報酬 # TODO　これだと行ったり来たりするだけで報酬がもらえる
+  REWARD_DEFAULT            = -1    # デフォルト報酬
   REWARD_LEADER_COLLISION   = -100  # 衝突時の報酬
   REWARD_FOLLOWER_COLLISION = -1    # 追従者の衝突時の報酬
   REWARD_EXPLORATION        = 50     # 探査報酬
@@ -69,7 +69,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
         parameter k_d of the policy (continuity)  | (0 <= k_d < inf): float
         parameter k_e of the policy (continuity)  | (0 <= k_e < inf): float
       observation_space:
-        follower_collision_info_list                      | (lits[(0 < mean < 2 *pi), (0 <= variance < inf)]): list[[mean: float | None, variance: float | None], ...] 
+        follower_collision_info_list                      | (lits[(0 < mean < 2 *pi), (0 <= covariance < inf)]): list[[mean: float | None, covariance: float | None], ...] 
         leader_collision_point: [y, x]                    | (0 <= y < ENV_HIGHT, 0 <= x < ENV_WIDTH): list[float, float] | None
         parameter B of the policy (continuity, current)   | (0 <= B <= 1): float
         parameter k_d of the policy (continuity, current) | (0 <= k_d < inf): float 
@@ -526,7 +526,9 @@ class GroupBehaviorStrategyEnv(gym.Env):
         # 探査率が上昇した場合
         reward += self.REWARD_EXPLORATION
     
-    # TODO フォロワーの報酬計算
+    # フォロワーの報酬計算
+    for collision_info in follower_collision_info_list:
+      reward -= collision_info['count'] * self.REWARD_FOLLOWER_COLLISION
 
     # 終了条件
     turncated = False # TODO エピソードが途中で終了した場合

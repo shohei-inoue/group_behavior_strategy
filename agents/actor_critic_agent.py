@@ -55,24 +55,38 @@ class EpsilonGreedyAgent:
         action = self.policy() # 行動選択
         next_state, reward, done, turncated, info = self.env.step(action) # 行動実行
         td_error = self.log(state, action, reward, next_state, done) # ログ
-        self.learn(td_error) # 学習
+        self.learn(td_error) # TODO 学習
         
         # 終了条件
         if done:
           break
+
+  def learn(self, td_error):
+    """
+    TODO
+    学習
+    """
+    pass
+    # with tf.GradientTape() as tape:
+    #   action = self.model.call(state)
+    #   loss = self.loss(action, td_error)
+    # grads = tape.gradient(loss, self.model.trainable_variables)
+    # self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
   
 
   def log(self, state, action, reward, next_state, done):
     """
+    TODO
     state: dict
     action: dict
     reward: float
     next_state: dict
     done: bool
     """
-    state_value = self.critic(state)
-    next_state_value = self.critic(next_state)
-    td_target = reward + self.gamma * next_state_value * (1 - done)
-    td_error = td_target - state_value
-    return td_error
+    pass
+    # state_value = self.critic(state)
+    # next_state_value = self.critic(next_state)
+    # td_target = reward + self.gamma * next_state_value * (1 - done)
+    # td_error = td_target - state_value
+    # return td_error
   
