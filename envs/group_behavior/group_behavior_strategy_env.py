@@ -5,6 +5,10 @@ import numpy as np
 import math
 import sqlalchemy
 import os
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+import matplotlib.colors as mcolors
+from matplotlib.patches import Circle
 from dotenv import load_dotenv
 from scipy.stats import vonmises
 
@@ -125,10 +129,13 @@ class GroupBehaviorStrategyEnv(gym.Env):
     self.explored_area = 0 # 探査済みエリア
     self.previous_explored_area = 0.0 # 1ステップ前の探査率
 
-    self.agent_position           = self.INIT_POSITION # 位置情報の初期化
-    self.previous_agent_position  = None # 1ステップ前の位置情報
-    self.agent_trajectory         = [self.agent_position.copy()] # 軌跡の初期化
-    self.env_frames               = [] # 描画用のフレームの初期化
+    self.agent_position                 = self.INIT_POSITION # 位置情報の初期化
+    self.previous_agent_position        = None # 1ステップ前の位置情報
+    self.agent_trajectory               = [self.agent_position.copy()] # 軌跡の初期化
+    self.drivability_pdf_list           = [] # 走行可能性の確率分布の初期化(描画で利用)
+    self.explore_improvement_pdf_list   = [] # 探査向上性の確率分布の初期化(描画で利用)
+    self.result_pdf_list                = [] # 結合確率分布の初期化(描画で利用)
+    self.env_frames                     = [] # 描画用のフレームの初期化
 
     # フォロワーの追加
     self.follower_robots = [Red(
@@ -146,6 +153,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
     """
     self.agent_position = self.INIT_POSITION # 位置情報の初期化
     self.agent_trajectory = [self.agent_position.copy()] # 軌跡の初期化
+    self.previous_agent_position = None # 1ステップ前の位置情報
     self.explored_area = 0 # 探査済みエリアの初期化
     self.explored_map.fill(0) # 探査済みマップの初期化
     self.previous_explored_area = 0.0 # 1ステップ前の探査率の初期化
@@ -156,24 +164,230 @@ class GroupBehaviorStrategyEnv(gym.Env):
         x=self.agent_position[1] + self.FOLLOWER_POSITION_OFFSET * math.cos((2 * math.pi * index / (self.FOLLOWER_NUM))),
         y=self.agent_position[0] + self.FOLLOWER_POSITION_OFFSET * math.sin((2 * math.pi * index / (self.FOLLOWER_NUM))),
     ) for index in range(self.FOLLOWER_NUM)] # フォロワーの初期化
+    self.result_pdf_list = [] # 結合確率分布の初期化
+    self.drivability_pdf_list = [] # 走行可能性の確率分布の初期化
+    self.explore_improvement_pdf_list = [] # 探査向上性の確率分布の初期化
 
 
-  def _render(self, mode='human'):
+  def _render(self, save_frames = False, mode='human'):
     """
-    render the environment
-    TODO マップの描画
-    TODO フォロワーの描画
-    TODO リーダーの描画
-    TODO pdfの描画
+    render the environment gridspecを利用
+    マップの描画
+    フォロワーの描画
+    リーダーの描画
     """
     if mode == 'rgb_array':
-      # return np.array([])
       pass
     elif mode == 'human':
-      pass
-    else:
-      # super().render(mode=mode)
-      pass
+      fig = plt.figure("Environment", figsize=(12, 12))
+      fig.clf()
+
+      # 全体のグリッドを設定
+      gs_master = gridspec.GridSpec(
+        nrows=3,
+        ncols=3,
+        height_ratios=[1, 1, 1],
+      )
+
+      # マップのグリッドを設定
+      gs_env = gridspec.GridSpecFromSubplotSpec(
+        nrows=1,
+        ncols=3,
+        subplot_spec=gs_master[0, :],
+      )
+
+      # gs_env を全体を1つのプロットとして設定
+      ax_env = fig.add_subplot(gs_env[:, :])
+      ax_env.set_title("Environment Map")
+      ax_env.set_xlabel("X-axis")
+      ax_env.set_ylabel("Y-axis")
+
+      # ---------------------------------------- Environment ----------------------------------------
+      # 環境のマップを描画
+      cmap = mcolors.ListedColormap(['white', 'gray', 'black'])
+      bounds = [0, 1, self.OBSTACLE_VALUE, self.OBSTACLE_VALUE + 1]
+      norm = mcolors.BoundaryNorm(bounds, cmap.N)
+
+      # マップの描画
+      ax_env.imshow(
+        self.map,
+        cmap='gray_r',
+        origin='lower',
+        extent=[0, self.ENV_WIDTH, 0, self.ENV_HEIGHT],
+      )
+      # 探査済みマップの描画
+      ax_env.imshow(
+        self.explored_map,
+        cmap=cmap,
+        alpha=0.5,
+        norm=norm,
+        origin='lower',
+        extent=[0, self.ENV_WIDTH, 0, self.ENV_HEIGHT],
+      )
+      # 探査中心位置の描画
+      ax_env.scatter(
+        x=self.agent_position[1],
+        y=self.agent_position[0],
+        color='blue',
+        s=100,
+        label='Explore Center',
+      )
+      # 軌跡の描画
+      ax_env.plot(
+        self.agent_trajectory[:, 1],
+        self.agent_trajectory[:, 0],
+        color='blue',
+        lineWidth=2,
+        label='Explore Center Trajectory',
+      )
+      # 探査領域の描画
+      explore_area = Circle(
+        (self.agent_position[1], self.agent_position[0]),
+        self.OUTER_BOUNDARY,
+        color='black',
+        fill=False,
+        linewidth=1,
+        label='Explore Area',
+      )
+      ax_env.add_patch(explore_area)
+      # Followerの描画
+      for follower in self.follower_robots:
+        ax_env.scatter(
+          x=follower.data['x'].iloc[-1],
+          y=follower.data['y'].iloc[-1],
+          color='red',
+          s=10,
+          # label=follower.id,
+        )
+        ax_env.plot(
+          follower.data['x'],
+          follower.data['y'],
+          color='gray',
+          lineWidth=0.5,
+          alpha=0.5,
+          # label=f"{follower.id} Trajectory",
+        )
+      
+      ax_env.set_xlim(0, self.ENV_WIDTH)
+      ax_env.set_ylim(0, self.ENV_HEIGHT)
+      ax_env.set_title('Explore Environment')
+      ax_env.set_xlabel('X')
+      ax_env.set_ylabel('Y')
+      ax_env.grid(False)
+      ax_env.legend()
+
+      # ---------------------------------------- Pdf ----------------------------------------
+      # pdfのグリッドを設定
+      gs_pdf = gridspec.GridSpecFromSubplotSpec(
+        nrows=1,
+        ncols=1,
+        subplot_spec=gs_master[1:, :],
+      )
+
+      # PDFのグリッドを6分割
+      pdf_axes: list[plt.Axes] = []
+      titles = [
+        "drivability (Cartesian plot)",
+        "exploration_improvement (Cartesian plot)",
+        "combined (Cartesian plot)"
+        "drivability (polar plot)",
+        "exploration_improvement (polar plot)",
+        "combined (polar plot)"
+      ]
+      for i in range(2):
+        for j in range(3):
+          ax = fig.add_subplot(gs_pdf[i, j])
+          pdf_axes.append(ax)
+      
+      # 走行可能性の確率分布の描画(cartesian)
+      pdf_axes[0].set_title(titles[0])
+      for id, pdf, style, width in self.drivability_pdf_list:
+        pdf_axes[0].plot(
+          self.ANGLES,
+          pdf,
+          label=id,
+          linestyle=style,
+          linewidth=width,
+        )
+      pdf_axes[0].set_xlabel("Angle(radians)")
+      pdf_axes[0].set_ylabel("Probability")
+      pdf_axes[0].legend()
+
+      # 探査向上性の確率分布の描画(cartesian)
+      pdf_axes[1].set_title(titles[1])
+      for id, pdf, style, width in self.explore_improvement_pdf_list:
+        pdf_axes[1].plot(
+          self.ANGLES,
+          pdf,
+          label=id,
+          linestyle=style,
+          linewidth=width,
+        )
+      pdf_axes[1].set_xlabel("Angle(radians)")
+      pdf_axes[1].set_ylabel("Probability")
+      pdf_axes[1].legend()
+
+      # 結合確率分布の描画(cartesian)
+      pdf_axes[2].set_title(titles[2])
+      for id, pdf, style, width in self.result_pdf_list:
+        pdf_axes[2].plot(
+          self.ANGLES,
+          pdf,
+          label=id,
+          linestyle=style,
+          linewidth=width,
+        )
+      pdf_axes[2].set_xlabel("Angle(radians)")
+      pdf_axes[2].set_ylabel("Probability")
+      pdf_axes[2].legend()
+
+      # 走行可能性の確率分布の描画(polar)
+      pdf_axes[3].set_title(titles[3])
+      for id, pdf, style, width in self.drivability_pdf_list:
+        pdf_axes[3].polar(
+          self.ANGLES,
+          pdf,
+          label=id,
+          linestyle=style,
+          linewidth=width,
+        )
+      pdf_axes[3].legend()
+
+      # 探査向上性の確率分布の描画(polar)
+      pdf_axes[4].set_title(titles[4])
+      for id, pdf, style, width in self.explore_improvement_pdf_list:
+        pdf_axes[4].polar(
+          self.ANGLES,
+          pdf,
+          label=id,
+          linestyle=style,
+          linewidth=width,
+        )
+      pdf_axes[4].legend()
+
+      # 結合確率分布の描画(polar)
+      pdf_axes[5].set_title(titles[5])
+      for id, pdf, style, width in self.result_pdf_list:
+        pdf_axes[5].polar(
+          self.ANGLES,
+          pdf,
+          label=id,
+          linestyle=style,
+          linewidth=width,
+        )
+      pdf_axes[5].legend()
+
+      # レイアウトの調整
+      plt.tight_layout()  
+      plt.draw()
+      plt.pause(0.001)
+
+      # フレームの保存
+      if save_frames:
+        filename = f"frame_{len(self.env_frames)}.png"
+        self.env_frames.append(fig)
+        plt.savefig(filename) 
+
 
   def _step(self, action):
     """
@@ -187,12 +401,31 @@ class GroupBehaviorStrategyEnv(gym.Env):
     k_d = action["k_d"]
     k_e = action["k_e"]
     
+    self.result_pdf_list = [] # 結合確率分布の初期化
     # 走行可能性の確率分布の生成
     drivability = self.get_drivability(k_d)
+    self.result_pdf_list.append({
+      "id": "drivability",
+      "pdf": drivability,
+      "lineStyle": "--",
+      "lineWidth": 1
+    })
     # 探査向上性の確率分布の生成
     exploration_improvement = self.get_exploration_improvement(k_e)
+    self.result_pdf_list.append({
+      "id": "exploration_improvement",
+      "pdf": exploration_improvement,
+      "lineStyle": "--",
+      "lineWidth": 1
+    })
     # 最終的な確率分布を生成
     output_pdf = B * drivability + (1 - B) * exploration_improvement
+    self.result_pdf_list.append({
+      "id": f"combined(B={B})",
+      "pdf": output_pdf,
+      "lineStyle": "-",
+      "lineWidth": 2
+    })
     # 確率分布から次の移動方向を決定
     theta = np.random.choice(self.ANGLES, p=output_pdf)
 
@@ -283,7 +516,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
     """
     走行可能性の確率分布の生成
     """
-    pdf_list = []
+    self.drivability_pdf_list = []
     combined_pdf = np.zeros_like(self.ANGLES)
 
     for follower in self.follower_robots:
@@ -301,9 +534,11 @@ class GroupBehaviorStrategyEnv(gym.Env):
       follower_pdf = 1 - follower_pdf
       follower_pdf /= np.sum(follower_pdf) # 正規化
 
-      pdf_list.append({
+      self.drivability_pdf_list.append({
         "id": data['red_id'],
-        "pdf": follower_pdf
+        "pdf": follower_pdf,
+        "lineStyle": "--",
+        "lineWidth": 1
       })
       combined_pdf += follower_pdf
     
@@ -313,7 +548,12 @@ class GroupBehaviorStrategyEnv(gym.Env):
     else:
       combined_pdf /= np.sum(combined_pdf)
     
-    # TODO 走行可能性の確率分布のレンダリング
+    self.drivability_pdf_list.append({
+      "id": "combined",
+      "pdf": combined_pdf,
+      "lineStyle": "-",
+      "lineWidth": 2
+    })
 
     return combined_pdf
   
@@ -322,6 +562,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
     """
     探査向上性の確率分布の生成
     """
+    self.explore_improvement_pdf_list = []
     mu = self.calculate_previous_azimuth()
     combined_pdf = np.zeros_like(self.ANGLES)
 
@@ -329,6 +570,12 @@ class GroupBehaviorStrategyEnv(gym.Env):
       previous_state_pdf = vonmises.pdf(self.ANGLES, self.KAPPA, loc=mu) # 前回の状態から得られる確率分布
       previous_state_pdf /= np.sum(previous_state_pdf)
       combined_pdf += previous_state_pdf
+      self.explore_improvement_pdf_list.append({
+        "id": "previous_state",
+        "pdf": previous_state_pdf,
+        "lineStyle": "--",
+        "lineWidth": 1
+      })
     else:
       print("No previous state.")
     
@@ -337,7 +584,12 @@ class GroupBehaviorStrategyEnv(gym.Env):
     # TODO 最終的な正規化
 
     
-    # TODO 探査向上性の確率分布のレンダリング
+    self.explore_improvement_pdf_list.append({
+      "id": "combined",
+      "pdf": combined_pdf,
+      "lineStyle": "-",
+      "lineWidth": 2
+    })
     
     return previous_state_pdf
 
