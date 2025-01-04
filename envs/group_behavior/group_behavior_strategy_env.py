@@ -28,6 +28,8 @@ class GroupBehaviorStrategyEnv(gym.Env):
   """
   # ----- Metadata: rendering mode -----
   metadata = {'render.modes': ['human', 'rgb_array']}
+  # ----- save data parameter -----
+  SAVE_FRAMES = True # フレームの保存
   # ----- size of drawing -----
   ENV_WIDTH = 150
   ENV_HEIGHT = 60
@@ -436,14 +438,14 @@ class GroupBehaviorStrategyEnv(gym.Env):
     self.agent_trajectory.append(self.agent_position.copy())
 
     # フォロワーの探査行動
-    for step in range(self.FOLLOWER_STEP):
+    for _ in range(self.FOLLOWER_STEP):
       for index in range(self.follower_robots):
         previous_position = self.follower_robots[index].point
         self.follower_robots[index].step_motion()
         self.update_exploration_map(previous_position, self.follower_robots[index].point) # 探査状況の更新
 
-      # TODO マップの更新
-      # self._render()
+      # レンダリング
+      self._render(save_frames=self.SAVE_FRAMES, mode='human')
     
     # 報酬計算
     reward = self.REWARD_DEFAULT
