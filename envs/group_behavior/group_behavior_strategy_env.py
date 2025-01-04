@@ -5,6 +5,7 @@ import numpy as np
 import math
 import sqlalchemy
 import os
+import random
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.colors as mcolors
@@ -697,10 +698,21 @@ class GroupBehaviorStrategyEnv(gym.Env):
 
   
   def _close(self):
-    pass
+    """
+    環境を終了する際のクリーンアップ処理
+    """
+    # Matplotlib のプロットウィンドウを閉じる
+    plt.close('all')
+
 
   def _seed(self, seed=None):
-    pass
+    """
+    環境のランダムシードを設定
+    """
+    self.np_random, seed = gym.utils.seeding.np_random(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    return [seed]
   
 
   def generate_obstacles(self) -> None:
