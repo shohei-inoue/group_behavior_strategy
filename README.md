@@ -25,3 +25,15 @@ DATABASE_URL=postgresql://user:password@localhost:5432/mydatabase
 ```
 docker-compose up --build
 ```
+
+## actor critic
+Actor-Critic モデル設計:
+Actor: 行動ポリシーを学習し、環境の観測からアクションをサンプリング。
+Critic: 状態価値関数 𝑉(𝑠)を学習。
+
+損失関数:
+Actor の損失: \[log(𝜋(𝑎∣𝑠))⋅𝐴(𝑠,𝑎)−log(π(a∣s))⋅A(s,a)\]（ポリシー勾配法）。
+Critic の損失: MSE(𝑅,𝑉(𝑠))
+エントロピー正則化（探索性維持）。
+トレーニングループ:
+環境からデータを収集し、Actor と Critic のネットワークを更新。

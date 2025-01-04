@@ -70,7 +70,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
         parameter k_e of the policy (continuity)  | (0 <= k_e < inf): float
       observation_space:
         follower_collision_info_list                      | (lits[(0 < mean < 2 *pi), (0 <= variance < inf)]): list[[mean: float | None, variance: float | None], ...] 
-        leader_collision_point: [y, x]                    | (0 <= y < ENV_HIGHT, 0 <= x < ENV_WIDTH): list[float, float]
+        leader_collision_point: [y, x]                    | (0 <= y < ENV_HIGHT, 0 <= x < ENV_WIDTH): list[float, float] | None
         parameter B of the policy (continuity, current)   | (0 <= B <= 1): float
         parameter k_d of the policy (continuity, current) | (0 <= k_d < inf): float 
         parameter k_e of the policy (continuity, current) | (0 <= k_e < inf): float 
@@ -88,21 +88,21 @@ class GroupBehaviorStrategyEnv(gym.Env):
     k_e_space = gym.spaces.Box(low=0.0, high=np.inf, shape=(), dtype=np.float32)
 
     self.action_space = gym.spaces.Dict({
-        "B": B_space,
-        "k_d": k_d_space,
-        "k_e": k_e_space
+      "B": B_space,
+      "k_d": k_d_space,
+      "k_e": k_e_space
     })
 
     # ----- observation_space -----
     # follower_collision_info_list
     follower_collision_info_template = gym.spaces.Dict({
       "mean": gym.spaces.Dict({
-          "value": gym.spaces.Box(low=0.0, high=2 * np.pi, shape=(), dtype=np.float32),  # mean in range (0, 2*pi)
-          "is_none": gym.spaces.Discrete(2)  # 0 if not None, 1 if None
+        "value": gym.spaces.Box(low=0.0, high=2 * np.pi, shape=(), dtype=np.float32),  # mean in range (0, 2*pi)
+        "is_none": gym.spaces.Discrete(2)  # 0 if not None, 1 if None
       }),
       "variance": gym.spaces.Dict({
-          "value": gym.spaces.Box(low=0.0, high=np.inf, shape=(), dtype=np.float32),  # variance >= 0
-          "is_none": gym.spaces.Discrete(2)  # 0 if not None, 1 if None
+        "value": gym.spaces.Box(low=0.0, high=np.inf, shape=(), dtype=np.float32),  # variance >= 0
+        "is_none": gym.spaces.Discrete(2)  # 0 if not None, 1 if None
       })
     })
     follower_collision_info_space = gym.spaces.Tuple([follower_collision_info_template] * self.FOLLOWER_NUM)
@@ -110,15 +110,18 @@ class GroupBehaviorStrategyEnv(gym.Env):
     # leader_collision_point
     leader_low = np.array([0.0, 0.0])  # y >= 0, x >= 0
     leader_high = np.array([self.ENV_HEIGHT, self.ENV_WIDTH])  # y < ENV_HEIGHT, x < ENV_WIDTH
-    leader_collision_point_space = gym.spaces.Box(low=leader_low, high=leader_high, shape=(2,), dtype=np.float32)
+    leader_collision_point_space = gym.spaces.Dict({
+      "value": gym.spaces.Box(low=leader_low, high=leader_high, shape=(2,), dtype=np.float32),  # 値範囲
+      "is_none": gym.spaces.Discrete(2)  # 0 if not None, 1 if None
+    })
 
     # Combine all spaces into a dictionary space
     self.observation_space = gym.spaces.Dict({
-        "follower_collision_info_list": follower_collision_info_space,
-        "leader_collision_point": leader_collision_point_space,
-        "B": B_space,
-        "k_d": k_d_space,
-        "k_e": k_e_space
+      "follower_collision_info_list": follower_collision_info_space,
+      "leader_collision_point": leader_collision_point_space,
+      "B": B_space,
+      "k_d": k_d_space,
+      "k_e": k_e_space
     })
 
     # ----- reward_range -----
@@ -142,15 +145,40 @@ class GroupBehaviorStrategyEnv(gym.Env):
 
     # フォロワーの追加
     self.follower_robots = [Red(
-        id=f'follower_{index}',
-        env=self,
-        agent_position=self.agent_position,
-        x=self.agent_position[1] + self.FOLLOWER_POSITION_OFFSET * math.cos((2 * math.pi * index / (self.FOLLOWER_NUM))),
+      id=f'follower_{index}',
+      env=self,
+      agent_position=self.agent_position,
+      x=self.agent_position[1] + self.FOLLOWER_POSITION_OFFSET * math.cos((2 * math.pi * index / (self.FOLLOWER_NUM))),
         y=self.agent_position[0] + self.FOLLOWER_POSITION_OFFSET * math.sin((2 * math.pi * index / (self.FOLLOWER_NUM))),
     ) for index in range(self.FOLLOWER_NUM)] 
 
+    # leader_collision_point を None に設定
+    leader_collision_point = {
+      "value": np.array([0.0, 0.0], dtype=np.float32),  # ダミー値 (使用されない)
+      "is_none": 1  # None を示すフラグ
+    }
 
-  def _reset(self) -> None:
+    # follower_collision_info_list の各要素を None に設定
+    follower_collision_info_list = tuple(
+      {
+        "mean": {"value": 0.0, "is_none": 1},       # mean は None
+        "variance": {"value": 0.0, "is_none": 1}   # variance も None
+      }
+      for _ in range(self.FOLLOWER_NUM)
+    )
+
+    # 初期状態を生成
+    self.state = {
+        "follower_collision_info_list": follower_collision_info_list,
+        "leader_collision_point": leader_collision_point,
+        "B": self.INITIAL_B,
+        "k_d": self.INITIAL_K_D,
+        "k_e": self.INITIAL_K_E
+    }
+
+
+
+  def reset(self) -> None:
     """
     initialize the environment
     """
@@ -171,8 +199,32 @@ class GroupBehaviorStrategyEnv(gym.Env):
     self.drivability_pdf_list = [] # 走行可能性の確率分布の初期化
     self.explore_improvement_pdf_list = [] # 探査向上性の確率分布の初期化
 
+    # leader_collision_point を None に設定
+    leader_collision_point = {
+      "value": np.array([0.0, 0.0], dtype=np.float32),  # ダミー値 (使用されない)
+      "is_none": 1  # None を示すフラグ
+    }
 
-  def _render(self, save_frames = False, mode='human'):
+    # follower_collision_info_list の各要素を None に設定
+    follower_collision_info_list = tuple(
+      {
+        "mean": {"value": 0.0, "is_none": 1},       # mean は None
+        "variance": {"value": 0.0, "is_none": 1}   # variance も None
+      }
+      for _ in range(self.FOLLOWER_NUM)
+    )
+
+    # 初期状態を生成
+    self.state = {
+        "follower_collision_info_list": follower_collision_info_list,
+        "leader_collision_point": leader_collision_point,
+        "B": self.INITIAL_B,
+        "k_d": self.INITIAL_K_D,
+        "k_e": self.INITIAL_K_E
+    }
+
+
+  def render(self, save_frames = False, mode='human'):
     """
     render the environment gridspecを利用
     マップの描画
@@ -392,7 +444,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
         plt.savefig(filename) 
 
 
-  def _step(self, action):
+  def step(self, action):
     """
     action:
       parameter B of the policy (continuity)    | (0 <= B <= 1): float
@@ -446,7 +498,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
         self.update_exploration_map(previous_position, self.follower_robots[index].point) # 探査状況の更新
 
       # レンダリング
-      self._render(save_frames=self.SAVE_FRAMES, mode='human')
+      self.render(save_frames=self.SAVE_FRAMES, mode='human')
     
     # 報酬計算
     reward = self.REWARD_DEFAULT
@@ -697,7 +749,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
     return points    
 
   
-  def _close(self):
+  def close(self):
     """
     環境を終了する際のクリーンアップ処理
     """
@@ -705,7 +757,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
     plt.close('all')
 
 
-  def _seed(self, seed=None):
+  def seed(self, seed=None):
     """
     環境のランダムシードを設定
     """
