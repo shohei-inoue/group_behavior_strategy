@@ -202,12 +202,12 @@ class GroupBehaviorStrategyEnv(gym.Env):
     self.agent_position, collision_flag = self.next_position(dy, dx)
     self.agent_trajectory.append(self.agent_position.copy())
 
-    # TODO フォロワーの探査行動
-
+    # フォロワーの探査行動
     for step in range(self.FOLLOWER_STEP):
       for index in range(self.follower_robots):
         previous_position = self.follower_robots[index].point
         self.follower_robots[index].step_motion()
+        self.update_exploration_map(previous_position, self.follower_robots[index].point) # 探査状況の更新
 
       # TODO マップの更新
       # self._render()
@@ -394,6 +394,52 @@ class GroupBehaviorStrategyEnv(gym.Env):
       azimuth = None
     
     return azimuth
+  
+
+  def update_exploration_map(self, previous_position, current_position) -> None:
+    """
+    探査状況の更新
+    """
+    # 前回位置から現在位置までの線分を取得
+    line_points = self.interpolate_line(previous_position, current_position)
+
+    for y, x in line_points:
+      if 0 <= y < self.ENV_HEIGHT and 0 <= x < self.ENV_WIDTH:
+        if self.explored_map[y, x] == 0 and self.map[y, x] != self.OBSTACLE_VALUE:
+          self.explored_map[y, x] = 1
+          self.explored_area += 1
+  
+
+  def interpolate_line(self, p1, p2):
+    """
+    2点間の整数座標の線分を取得(Bresenhamアルゴリズムの応用)
+    :p1: 始点(y, x)
+    :p2: 終点(y, x)
+    return: 線分上の全ての整数座標
+    """
+    y1, x1 = int(p1[0]), int(p1[1])
+    y2, x2 = int(p2[0]), int(p2[1])
+
+    points = []
+    dx = abs(x2 - x1)
+    dy = abs(y2 - y1)
+    sx = 1 if x1 < x2 else -1
+    sy = 1 if y1 < y2 else -1
+    err = dx - dy
+    
+    while True:
+        points.append((y1, x1))
+        if y1 == y2 and x1 == x2:
+            break
+        e2 = err * 2
+        if e2 > -dy:
+            err -= dy
+            x1 += sx
+        if e2 < dx:
+            err += dx
+            y1 += sy
+    
+    return points    
 
   
   def _close(self):
