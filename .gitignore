@@ -172,3 +172,9 @@ csv/
 
 # Ignore all files in tex folder
 document/
+
+# ignore all png files
+*.png
+
+# ignore all gif files
+*.gif
