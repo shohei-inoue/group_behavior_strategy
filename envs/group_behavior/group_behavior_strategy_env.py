@@ -5,6 +5,7 @@ import numpy as np
 import math
 import sqlalchemy
 import os
+import imageio
 import random
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
@@ -18,8 +19,8 @@ from scipy.stats import vonmises
 load_dotenv()
 
 # データベース接続の設定
-DATABASE_URL = os.getenv("DATABASE_URL")
-engine = sqlalchemy.create_engine(DATABASE_URL)
+# DATABASE_URL = os.getenv("DATABASE_URL")
+# engine = sqlalchemy.create_engine(DATABASE_URL)
 
 
 class GroupBehaviorStrategyEnv(gym.Env):
@@ -46,6 +47,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
   REWARD_LEADER_COLLISION   = -100  # 衝突時の報酬
   REWARD_FOLLOWER_COLLISION = -1    # 追従者の衝突時の報酬
   REWARD_EXPLORATION        = 50     # 探査報酬
+  REWARD_FINISH             = 100
   # ----- finish parameter -----
   FINISH_EXPLORED_RATE = 0.95 # 探査率の終了条件
   # ----- Von Mises distribution parameter -----
@@ -55,6 +57,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
   INITIAL_B     = 0.5 # B_0
   INITIAL_K_D   = 1.0 # k_d_0
   INITIAL_K_E   = 1.0 # k_e_0
+  INITIAL_K_C   = 1.0 # k_c_0
   INIT_POSITION = [10.0, 10.0] # 初期位置(y, x)
   # ----- follower parameter -----
   FOLLOWER_NUM             = 10 # 追従者の数
@@ -68,9 +71,10 @@ class GroupBehaviorStrategyEnv(gym.Env):
         parameter B of the policy (continuity)    | (0 <= B <= 1): float
         parameter k_d of the policy (continuity)  | (0 <= k_d < inf): float
         parameter k_e of the policy (continuity)  | (0 <= k_e < inf): float
+        parameter k_c of the policy (continuity)  | (0 <= k_c < inf): float
       observation_space:
         follower_collision_info_list                      | (lits[(0 < mean < 2 *pi), (0 <= covariance < inf)]): list[[mean: float | None, covariance: float | None], ...] 
-        leader_collision_point: [y, x]                    | (0 <= y < ENV_HIGHT, 0 <= x < ENV_WIDTH): list[float, float] | None
+        leader_collision_point: theta                     | (0 <= theta < 2 * pi: float | None
         parameter B of the policy (continuity, current)   | (0 <= B <= 1): float
         parameter k_d of the policy (continuity, current) | (0 <= k_d < inf): float 
         parameter k_e of the policy (continuity, current) | (0 <= k_e < inf): float 
@@ -87,32 +91,28 @@ class GroupBehaviorStrategyEnv(gym.Env):
     # parameter k_e
     k_e_space = gym.spaces.Box(low=0.0, high=np.inf, shape=(), dtype=np.float32)
 
+    # parameter k_c
+    k_c_space = gym.spaces.Box(low=0.0, high=np.inf, shape=(), dtype=np.float32)
+
     self.action_space = gym.spaces.Dict({
       "B": B_space,
       "k_d": k_d_space,
-      "k_e": k_e_space
+      "k_e": k_e_space,
+      "k_c": k_c_space
     })
 
     # ----- observation_space -----
-    # follower_collision_info_list
     follower_collision_info_template = gym.spaces.Dict({
-      "mean": gym.spaces.Dict({
-        "value": gym.spaces.Box(low=0.0, high=2 * np.pi, shape=(), dtype=np.float32),  # mean in range (0, 2*pi)
-        "is_none": gym.spaces.Discrete(2)  # 0 if not None, 1 if None
-      }),
-      "covariance": gym.spaces.Dict({
-        "value": gym.spaces.Box(low=0.0, high=np.inf, shape=(), dtype=np.float32),  # covariance >= 0
-        "is_none": gym.spaces.Discrete(2)  # 0 if not None, 1 if None
-      }),
-      "count": gym.spaces.Box(low=0, high=np.inf, shape=(), dtype=np.int32)
+      "has_collisions": gym.spaces.Discrete(2),  # 0: 障害物なし, 1: 障害物あり
+      "mean": gym.spaces.Box(low=0.0, high=2 * np.pi, shape=(), dtype=np.float32),  # mean in range (0, 2*pi)
+      "covariance": gym.spaces.Box(low=0.0, high=np.inf, shape=(), dtype=np.float32),  # covariance >= 0
+      "count": gym.spaces.Box(low=0, high=np.inf, shape=(), dtype=np.int32)  # 衝突回数
     })
     follower_collision_info_space = gym.spaces.Tuple([follower_collision_info_template] * self.FOLLOWER_NUM)
 
     # leader_collision_point
-    leader_low = np.array([0.0, 0.0])  # y >= 0, x >= 0
-    leader_high = np.array([self.ENV_HEIGHT, self.ENV_WIDTH])  # y < ENV_HEIGHT, x < ENV_WIDTH
     leader_collision_point_space = gym.spaces.Dict({
-      "value": gym.spaces.Box(low=leader_low, high=leader_high, shape=(2,), dtype=np.float32),  # 値範囲
+      "value": gym.spaces.Box(low=0.0, high=2 * np.pi, shape=(), dtype=np.float32),  # 値範囲
       "is_none": gym.spaces.Discrete(2)  # 0 if not None, 1 if None
     })
 
@@ -122,7 +122,8 @@ class GroupBehaviorStrategyEnv(gym.Env):
       "leader_collision_point": leader_collision_point_space,
       "B": B_space,
       "k_d": k_d_space,
-      "k_e": k_e_space
+      "k_e": k_e_space,
+      "k_c": k_c_space,
     })
 
     # ----- reward_range -----
@@ -135,6 +136,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
     self.total_area   = np.prod(self.map.shape) - np.sum(self.map == self.OBSTACLE_VALUE) # 探査可能なエリア
     self.explored_area = 0 # 探査済みエリア
     self.previous_explored_area = 0.0 # 1ステップ前の探査率
+    self.agent_step = 0 # エージェントのステップ
 
     self.agent_position                 = self.INIT_POSITION # 位置情報の初期化
     self.previous_agent_position        = None # 1ステップ前の位置情報
@@ -155,15 +157,16 @@ class GroupBehaviorStrategyEnv(gym.Env):
 
     # leader_collision_point を None に設定
     leader_collision_point = {
-      "value": np.array([0.0, 0.0], dtype=np.float32),  # ダミー値 (使用されない)
+      "value": 0.0,
       "is_none": 1  # None を示すフラグ
     }
 
     # follower_collision_info_list の各要素を None に設定
     follower_collision_info_list = tuple(
       {
-        "mean": {"value": 0.0, "is_none": 1},       # mean は None
-        "covariance": {"value": 0.0, "is_none": 1},   # covariance も None
+        "has_collisions": 0, 
+        "mean": 0.0,  
+        "covariance": 0.0,  
         "count": 0
       }
       for _ in range(self.FOLLOWER_NUM)
@@ -175,12 +178,12 @@ class GroupBehaviorStrategyEnv(gym.Env):
         "leader_collision_point": leader_collision_point,
         "B": self.INITIAL_B,
         "k_d": self.INITIAL_K_D,
-        "k_e": self.INITIAL_K_E
+        "k_e": self.INITIAL_K_E,
+        "k_c": self.INITIAL_K_C,
     }
 
 
-
-  def reset(self) -> None:
+  def reset(self):
     """
     initialize the environment
     """
@@ -200,18 +203,21 @@ class GroupBehaviorStrategyEnv(gym.Env):
     self.result_pdf_list = [] # 結合確率分布の初期化
     self.drivability_pdf_list = [] # 走行可能性の確率分布の初期化
     self.explore_improvement_pdf_list = [] # 探査向上性の確率分布の初期化
+    self.agent_step = 0
 
     # leader_collision_point を None に設定
     leader_collision_point = {
-      "value": np.array([0.0, 0.0], dtype=np.float32),  # ダミー値 (使用されない)
+      "value": 0.0,  # ダミー値 (使用されない)
       "is_none": 1  # None を示すフラグ
     }
 
     # follower_collision_info_list の各要素を None に設定
     follower_collision_info_list = tuple(
       {
-        "mean": {"value": 0.0, "is_none": 1},       # mean は None
-        "covariance": {"value": 0.0, "is_none": 1}   # covariance も None
+        "has_collisions": 0,
+        "mean": 0.0,
+        "covariance": 0.0,
+        "count": 0,
       }
       for _ in range(self.FOLLOWER_NUM)
     )
@@ -222,8 +228,11 @@ class GroupBehaviorStrategyEnv(gym.Env):
         "leader_collision_point": leader_collision_point,
         "B": self.INITIAL_B,
         "k_d": self.INITIAL_K_D,
-        "k_e": self.INITIAL_K_E
+        "k_e": self.INITIAL_K_E,
+        "k_c": self.INITIAL_K_C,
     }
+
+    return self.state
 
 
   def render(self, save_frames = False, mode='human'):
@@ -290,11 +299,15 @@ class GroupBehaviorStrategyEnv(gym.Env):
         label='Explore Center',
       )
       # 軌跡の描画
+      trajectory = np.array(self.agent_trajectory, dtype=np.float32)
+
       ax_env.plot(
-        self.agent_trajectory[:, 1],
-        self.agent_trajectory[:, 0],
+        # self.agent_trajectory[:, 1],
+        # self.agent_trajectory[:, 0],
+        trajectory[:, 1],
+        trajectory[:, 0],
         color='blue',
-        lineWidth=2,
+        linewidth=2,
         label='Explore Center Trajectory',
       )
       # 探査領域の描画
@@ -320,7 +333,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
           follower.data['x'],
           follower.data['y'],
           color='gray',
-          lineWidth=0.5,
+          linewidth=0.5,
           alpha=0.5,
           # label=f"{follower.id} Trajectory",
         )
@@ -336,8 +349,8 @@ class GroupBehaviorStrategyEnv(gym.Env):
       # ---------------------------------------- Pdf ----------------------------------------
       # pdfのグリッドを設定
       gs_pdf = gridspec.GridSpecFromSubplotSpec(
-        nrows=1,
-        ncols=1,
+        nrows=2,
+        ncols=3,
         subplot_spec=gs_master[1:, :],
       )
 
@@ -346,25 +359,29 @@ class GroupBehaviorStrategyEnv(gym.Env):
       titles = [
         "drivability (Cartesian plot)",
         "exploration_improvement (Cartesian plot)",
-        "combined (Cartesian plot)"
+        "combined (Cartesian plot)",
         "drivability (polar plot)",
         "exploration_improvement (polar plot)",
         "combined (polar plot)"
       ]
       for i in range(2):
         for j in range(3):
-          ax = fig.add_subplot(gs_pdf[i, j])
-          pdf_axes.append(ax)
+            if i == 1:  # 2段目（下段）は極座標
+                ax = fig.add_subplot(gs_pdf[i, j], projection='polar')
+            else:  # 1段目（上段）は直交座標
+                ax = fig.add_subplot(gs_pdf[i, j])
+            pdf_axes.append(ax)
       
       # 走行可能性の確率分布の描画(cartesian)
       pdf_axes[0].set_title(titles[0])
-      for id, pdf, style, width in self.drivability_pdf_list:
+      
+      for data in self.drivability_pdf_list:
         pdf_axes[0].plot(
           self.ANGLES,
-          pdf,
-          label=id,
-          linestyle=style,
-          linewidth=width,
+          data['pdf'],
+          label=data['id'],
+          linestyle=data['lineStyle'],
+          linewidth=data['lineWidth'],
         )
       pdf_axes[0].set_xlabel("Angle(radians)")
       pdf_axes[0].set_ylabel("Probability")
@@ -372,13 +389,13 @@ class GroupBehaviorStrategyEnv(gym.Env):
 
       # 探査向上性の確率分布の描画(cartesian)
       pdf_axes[1].set_title(titles[1])
-      for id, pdf, style, width in self.explore_improvement_pdf_list:
+      for data in self.explore_improvement_pdf_list:
         pdf_axes[1].plot(
           self.ANGLES,
-          pdf,
-          label=id,
-          linestyle=style,
-          linewidth=width,
+          data['pdf'],
+          label=data['id'],
+          linestyle=data['lineStyle'],
+          linewidth=data['lineWidth'],
         )
       pdf_axes[1].set_xlabel("Angle(radians)")
       pdf_axes[1].set_ylabel("Probability")
@@ -386,13 +403,13 @@ class GroupBehaviorStrategyEnv(gym.Env):
 
       # 結合確率分布の描画(cartesian)
       pdf_axes[2].set_title(titles[2])
-      for id, pdf, style, width in self.result_pdf_list:
+      for data in self.result_pdf_list:
         pdf_axes[2].plot(
           self.ANGLES,
-          pdf,
-          label=id,
-          linestyle=style,
-          linewidth=width,
+          data['pdf'],
+          label=data['id'],
+          linestyle=data['lineStyle'],
+          linewidth=data['lineWidth'],
         )
       pdf_axes[2].set_xlabel("Angle(radians)")
       pdf_axes[2].set_ylabel("Probability")
@@ -400,50 +417,78 @@ class GroupBehaviorStrategyEnv(gym.Env):
 
       # 走行可能性の確率分布の描画(polar)
       pdf_axes[3].set_title(titles[3])
-      for id, pdf, style, width in self.drivability_pdf_list:
-        pdf_axes[3].polar(
+      for data in self.drivability_pdf_list:
+        pdf_axes[3].plot(
           self.ANGLES,
-          pdf,
-          label=id,
-          linestyle=style,
-          linewidth=width,
+          data['pdf'],
+          label=data['id'],
+          linestyle=data['lineStyle'],
+          linewidth=data['lineWidth'],
         )
       pdf_axes[3].legend()
 
       # 探査向上性の確率分布の描画(polar)
       pdf_axes[4].set_title(titles[4])
-      for id, pdf, style, width in self.explore_improvement_pdf_list:
-        pdf_axes[4].polar(
+      for data in self.explore_improvement_pdf_list:
+        pdf_axes[4].plot(
           self.ANGLES,
-          pdf,
-          label=id,
-          linestyle=style,
-          linewidth=width,
+          data['pdf'],
+          label=data['id'],
+          linestyle=data['lineStyle'],
+          linewidth=data['lineWidth'],
         )
       pdf_axes[4].legend()
 
       # 結合確率分布の描画(polar)
       pdf_axes[5].set_title(titles[5])
-      for id, pdf, style, width in self.result_pdf_list:
-        pdf_axes[5].polar(
+      for data in self.result_pdf_list:
+        pdf_axes[5].plot(
           self.ANGLES,
-          pdf,
-          label=id,
-          linestyle=style,
-          linewidth=width,
+          data['pdf'],
+          label=data['id'],
+          linestyle=data['lineStyle'],
+          linewidth=data['lineWidth'],
         )
       pdf_axes[5].legend()
 
       # レイアウトの調整
       plt.tight_layout()  
-      plt.draw()
-      plt.pause(0.001)
+      # plt.draw()
+      # plt.pause(0.001) # TODO 一旦出力なくす
 
       # フレームの保存
       if save_frames:
         filename = f"frame_{len(self.env_frames)}.png"
         self.env_frames.append(fig)
         plt.savefig(filename) 
+  
+
+  def save_gif(self, episode, date_time) -> None:
+    """
+    保存したフレームをGIFに変換
+    """
+    path_name = f"{date_time}_episode{episode}"
+    gif_dir = f"gif/{path_name}"
+    gif_name = f"{path_name}.gif"
+
+    os.makedirs(gif_dir, exist_ok=True)
+
+    for i, frame in enumerate(self.env_frames):
+      frame_path = f'frame_{i}.png'
+      frame.savefig(frame_path)
+      plt.close(frame)
+
+    # images = [imageio.imread(frame) for frame in self.env_frames]
+    images = [imageio.imread(f'frame_{i}.png') for i in range(len(self.env_frames))]
+    imageio.mimsave(f"{gif_dir}/{gif_name}", images, duration=0.1)
+    
+
+
+    # 一時ファイルの削除
+    for i in range(len(self.env_frames)):
+      os.remove(f"frame_{i}.png")
+    
+    self.env_frames = []
 
 
   def step(self, action):
@@ -452,11 +497,15 @@ class GroupBehaviorStrategyEnv(gym.Env):
       parameter B of the policy (continuity)    | (0 <= B <= 1): float
       parameter k_d of the policy (continuity)  | (0 <= k_d < inf): float
       parameter k_e of the policy (continuity)  | (0 <= k_e < inf): float
+      parameter k_c of the policy (continuity)  | (0 <= k_c < inf): float
     """
     # actionの取得
     B = action["B"]
     k_d = action["k_d"]
     k_e = action["k_e"]
+    k_c = action["k_c"]
+
+    print(f"B : {B}, k_d: {k_d}, k_e; {k_e}, k_c: {k_c}")
     
     self.result_pdf_list = [] # 結合確率分布の初期化
     # 走行可能性の確率分布の生成, フォロワーの衝突情報の取得
@@ -467,46 +516,64 @@ class GroupBehaviorStrategyEnv(gym.Env):
       "lineStyle": "--",
       "lineWidth": 1
     })
+
+    print(f"drivability :{drivability}")
+    
     # 探査向上性の確率分布の生成
-    exploration_improvement = self.get_exploration_improvement(k_e)
+    exploration_improvement = self.get_exploration_improvement(k_e, k_c)
     self.result_pdf_list.append({
       "id": "exploration_improvement",
       "pdf": exploration_improvement,
       "lineStyle": "--",
       "lineWidth": 1
     })
+
+    print(f"exploration_improvement :{exploration_improvement}")
+    
     # 最終的な確率分布を生成
     output_pdf = B * drivability + (1 - B) * exploration_improvement
+    print(f"before output_pdf : {output_pdf}")
+    output_pdf = output_pdf / np.sum(output_pdf)
+    
     self.result_pdf_list.append({
       "id": f"combined(B={B})",
       "pdf": output_pdf,
       "lineStyle": "-",
       "lineWidth": 2
     })
+
+    print(f"output_pdf : {output_pdf}")
+
     # 確率分布から次の移動方向を決定
     theta = np.random.choice(self.ANGLES, p=output_pdf)
+    print(f"theta: {theta}")
 
-    dx = self.OUTER_BOUNDARY * np.cos(np.radians(theta))
-    dy = self.OUTER_BOUNDARY * np.sin(np.radians(theta))
+    dx = self.OUTER_BOUNDARY * np.cos(theta)
+    dy = self.OUTER_BOUNDARY * np.sin(theta)
 
+    self.previous_agent_position = self.agent_position.copy()
     self.agent_position, collision_flag = self.next_position(dy, dx)
     self.agent_trajectory.append(self.agent_position.copy())
+
+    # フォロワーのリーダー機の観測位置の変更
+    for index in range(len(self.follower_robots)):
+      self.follower_robots[index].change_agent_state(self.agent_position)
 
     # leader_collision_pointの獲得
     if collision_flag:
       leader_collision_point = {
-        "value": self.agent_position,
+        "value": theta,
         "is_none": 0
       }
     else:
       leader_collision_point = {
-        "value": np.array([0.0, 0.0], dtype=np.float32),
+        "value": theta,
         "is_none": 1
       }
 
     # フォロワーの探査行動
     for _ in range(self.FOLLOWER_STEP):
-      for index in range(self.follower_robots):
+      for index in range(len(self.follower_robots)):
         previous_position = self.follower_robots[index].point
         self.follower_robots[index].step_motion()
         self.update_exploration_map(previous_position, self.follower_robots[index].point) # 探査状況の更新
@@ -523,7 +590,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
       # 探査率の計算
       exploration_rate = self.explored_area / self.total_area
       if exploration_rate > self.previous_explored_area:
-        # 探査率が上昇した場合
+        # 探査率が上昇した場合 # TODO 上昇した量により報酬を変更するようにする
         reward += self.REWARD_EXPLORATION
     
     # フォロワーの報酬計算
@@ -531,19 +598,23 @@ class GroupBehaviorStrategyEnv(gym.Env):
       reward -= collision_info['count'] * self.REWARD_FOLLOWER_COLLISION
 
     # 終了条件
+    done = False
     turncated = False # TODO エピソードが途中で終了した場合
-    done = self.explored_area >= self.total_area * self.FINISH_EXPLORED_RATE # 探査率が一定以上になった場合
+    if self.explored_area >= self.total_area * self.FINISH_EXPLORED_RATE: # 探査率が一定以上になった場合
+      done = True
+      reward += self.REWARD_FINISH
 
     self.state = {
       "follower_collision_info_list": follower_collision_info_list,
       "leader_collision_point": leader_collision_point,
       "B": B,
       "k_d": k_d,
-      "k_e": k_e
+      "k_e": k_e,
+      "k_c": k_c,
     }
 
     return self.state, reward, done, turncated, {} # TODO infoを返す必要があるかも
-  
+
 
   def next_position(self, dy, dx) -> tuple[np.ndarray, bool]:
     """
@@ -574,16 +645,9 @@ class GroupBehaviorStrategyEnv(gym.Env):
           collision_position = intermediate_position
           direction_vector = collision_position - self.agent_position
           norm_direction_vector = np.linalg.norm(direction_vector)
-
-          # if norm_direction_vector > SAFE_DISTANCE:
-          #     stop_position = self.agent_position + (direction_vector / norm_direction_vector) * (norm_direction_vector - SAFE_DISTANCE)
-          #     return stop_position
-          # else:
-          #     # 移動距離が安全距離より短い場合はそのまま停止
-          #     return self.agent_position
           stop_position = self.agent_position + (direction_vector / norm_direction_vector) * (norm_direction_vector - SAFE_DISTANCE)
 
-        return stop_position, collision_flag
+          return stop_position, collision_flag
       
       else:
         continue
@@ -602,39 +666,50 @@ class GroupBehaviorStrategyEnv(gym.Env):
     for follower in self.follower_robots:
       data = follower.calculate_collision_stats() # red_id, count, mean, variance
       collision_info = {
-        "mean": {"value": data['mean'], "is_none": 0 if data['mean'] is not 0 else 1},
-        "covariance": {"value": data['cov'], "is_none": 0 if data['cov'] is not 0 else 1},
-        "count": data['count']
+        "has_collisions": data['has_collisions'],
+        "mean": data['mean'],
+        "covariance": data['covariance'],
+        "count": data['count'],
       }
       follower_collision_info_list.append(collision_info)
 
-      azimuth = self.calculate_follower_azimuth(data['mean'])
+      # azimuth = self.calculate_follower_azimuth(data['mean'])
 
-      count = data['count']
-      covariance = data['cov']
-      kappa = self.calculate_kappa(count, covariance, k_d) # 逆温度の計算
+      if data['has_collisions'] == 1:
+        count = data['count']
+        covariance = data['covariance']
+        kappa = self.calculate_drivability_kappa(count, covariance, k_d) # 逆温度の計算
 
-      follower_pdf = vonmises.pdf(self.ANGLES, kappa, loc=azimuth) # フォロワーの確率分布
-      follower_pdf /= np.sum(follower_pdf) # 正規化
+        print(f"count: {count} | covariance: {covariance} | kappa: {kappa} | mean: {data['mean']}")
 
-      # 分布を反転
-      follower_pdf = 1 - follower_pdf
-      follower_pdf /= np.sum(follower_pdf) # 正規化
 
-      self.drivability_pdf_list.append({
-        "id": data['red_id'],
-        "pdf": follower_pdf,
-        "lineStyle": "--",
-        "lineWidth": 1
-      })
-      combined_pdf += follower_pdf
+        follower_pdf = vonmises.pdf(self.ANGLES, kappa, loc=data['mean']) # フォロワーの確率分布
+        print(f"red_id {follower.id} | red_data: {data}")
+        print(f"red_id: {follower.id} | follower_pdf :{follower_pdf}")
+
+        follower_pdf /= np.sum(follower_pdf) # 正規化
+
+        # 分布を反転
+        follower_pdf = 1 - follower_pdf
+        follower_pdf /= np.sum(follower_pdf) # 正規化
+
+        self.drivability_pdf_list.append({
+          "id": data['red_id'],
+          "pdf": follower_pdf,
+          "lineStyle": "--",
+          "lineWidth": 1
+        })
+        combined_pdf += follower_pdf
     
-    if combined_pdf.sum() == 0:
+    print(f"combined_pdf: {combined_pdf.sum()}")
+
+    if combined_pdf.sum() > 0:
+      combined_pdf /= np.sum(combined_pdf)
+    else:
       # 衝突データが存在しない場合
       print("No collision data. using uniform distribution.")
-    else:
-      combined_pdf /= np.sum(combined_pdf)
-    
+      combined_pdf = np.ones_like(self.ANGLES) # 一様分布を出力
+
     self.drivability_pdf_list.append({
       "id": "combined",
       "pdf": combined_pdf,
@@ -645,7 +720,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
     return combined_pdf, follower_collision_info_list
   
 
-  def get_exploration_improvement(self, k_e) -> np.ndarray:
+  def get_exploration_improvement(self, k_e, k_c) -> np.ndarray:
     """
     探査向上性の確率分布の生成
     """
@@ -654,7 +729,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
     combined_pdf = np.zeros_like(self.ANGLES)
 
     if mu is not None:
-      previous_state_pdf = vonmises.pdf(self.ANGLES, self.KAPPA, loc=mu) # 前回の状態から得られる確率分布
+      previous_state_pdf = vonmises.pdf(self.ANGLES, k_e, loc=mu) # 前回の状態から得られる確率分布
       previous_state_pdf /= np.sum(previous_state_pdf)
       combined_pdf += previous_state_pdf
       self.explore_improvement_pdf_list.append({
@@ -666,9 +741,25 @@ class GroupBehaviorStrategyEnv(gym.Env):
     else:
       print("No previous state.")
     
+    
     # 衝突があった場合, 衝突方向の確率分布を下げる
-    # TODO collision_flagをobservation_spaceに追加するか検討
-    # TODO 最終的な正規化
+    if self.state['leader_collision_point']['is_none']:
+      if mu is not None: # TODO muの計算変更
+        collision_pdf = vonmises.pdf(self.ANGLES, k_c, loc=mu) 
+        collision_pdf /= np.sum(collision_pdf)
+
+        collision_pdf = 1 - collision_pdf
+        collision_pdf /= np.sum(collision_pdf)
+
+        combined_pdf += collision_pdf
+        self.explore_improvement_pdf_list.append({
+          "id": "collision_pdf",
+          "pdf": collision_pdf,
+          "lineStyle": "--",
+          "lineWidth": 1
+        })
+    else:
+      print("No collision state") 
 
     
     self.explore_improvement_pdf_list.append({
@@ -678,7 +769,7 @@ class GroupBehaviorStrategyEnv(gym.Env):
       "lineWidth": 2
     })
     
-    return previous_state_pdf
+    return combined_pdf
 
 
   def calculate_follower_azimuth(self, follower_position: np.ndarray) -> float:
@@ -686,10 +777,12 @@ class GroupBehaviorStrategyEnv(gym.Env):
     リーダー機から見たフォロワー機の方位角を計算
     障害物情報の中心となる方位角を計算
     """
+    # print(f"follower_position: {follower_position}")
+
     if follower_position is not None:
       # 現在位置と前の位置の差分を計算
-      dy = follower_position[0] - self.state[0]
-      dx = follower_position[1] - self.state[1]
+      dy = follower_position[0] - self.agent_position[0] 
+      dx = follower_position[1] - self.agent_position[1]
 
       # atan2で方位角を計算
       azimuth = math.atan2(dy, dx)
@@ -703,13 +796,13 @@ class GroupBehaviorStrategyEnv(gym.Env):
     return azimuth 
   
 
-  def calculate_kappa(self, count, covariance, k_d):
+  def calculate_drivability_kappa(self, count, covariance, k_d):
     """
     逆温度の計算
     TODO 改良の余地あり
     """
     if covariance == 0:
-      return np.inf # 分散が0の場合は無限大
+      return 1.0 # 分散が0の場合は1.0
     
     return k_d * (count / covariance)
   
@@ -731,6 +824,21 @@ class GroupBehaviorStrategyEnv(gym.Env):
         azimuth += 2 * math.pi
     else:
       azimuth = None
+    
+    return azimuth
+  
+
+  def calculate_collision_azimuth(self) -> float:
+    """
+    衝突が発生した場合の方位角を計算
+    """
+    dy = self.previous_agent_position[0] - self.agent_position[0]
+    dx = self.previous_agent_position[1] - self.agent_position[1]
+
+    azimuth = math.atan(dy, dx)
+
+    if azimuth < 0:
+      azimuth += 2 * math.pi
     
     return azimuth
   

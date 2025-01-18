@@ -1,92 +1,91 @@
 import tensorflow as tf
 import numpy as np
 
-class EpsilonGreedyAgent:
+class ActorCriticAgent:
   def __init__(
       self, 
       env, 
       model, 
+      optimizer,
       gamma=0.99,
-      epsilon=1.0,
+      learning_rate=1e-3
       ):
     """
     constructor: initialize the agent
     """
-    super(EpsilonGreedyAgent, self).__init__()
+    super(ActorCriticAgent, self).__init__()
     self.env            = env # environment
     self.model          = model # learning model
     self.gamma          = gamma # 割引率
-    self.epsilon        = epsilon # epsilon-greedy法のεの初期値
-    self.epsilon_min    = 0.01 # εの最小値
-    self.epsilon_decay  = 0.995 # εの減衰率
-    self.learning_rate  = 0.001 # 学習率
-    self.optimizer      = tf.keras.optimizers.Adam(self.learning_rate) # optimizer
-    self.state         = None # 状態
-    self.action        = None
-    self.reward        = None
-    self.terncalated   = False # 終了フラグ
-    self.done          = False # 終了フラグ
+    self.learning_rate  = learning_rate # 学習率
+    self.optimizer      = optimizer
+    self.state          = self.env.reset() # 状態
   
 
-  def policy(self):
+  def select_action(self, state):
     """
-    TODO
-    policy: 行動選択
-    epsilon-greedy法を使って行動を選択する
+    状態に基づき行動を選択
     """
-    if np.random.rand() <= self.epsilon:
-      print('random')
-      return np.random.choice(self.env.action_space)
-    else:
-      print('greedy')
-      # return np.argmax(self.model.call(input))
+    state = np.expand_dims(state, axis=0)
+    logits, _ = self.model(state, axis=0)
+    action_prob = tf.nn.softmax(logits)
+    action = np.random.choice(len(action_prob[0]), p=action_prob.numpy()[0])
+
+  
+  def step(self, action):
+    """
+    環境とのインタラクション
+    """
+    next_state, reward, done, turncated, info = self.env.step(action)
+    return next_state, reward, done, turncated, info
+
+
+  def update_model(self, states, actions, rewards, next_states, dones):
+    """
+    モデルの更新
+    """
+    with tf.GradientTape() as tape:
+      # 状態価値の計算
+      _, values = self.model(np.array(states))
+      _, next_values = self.model(np.array(next_states))
+
+      # advantageの計算 TODO ここはポリシー勾配法？
+      targets = np.array(rewards) + self.gamma * np.array(next_values) * (1 - np.array(dones))
+      advantages = targets - values
+
+      # Actor損失
+      logits, _ = self.model(np.array(states))
+      action_masks = tf.one_hot(actions, logits.shape[-1]) # 行動のone-hot表現
+      log_probs = tf.reduce_sum(action_masks * tf.nn.log_softmax(logits), axis=1)
+      actor_loss = -tf.reduce_mean(log_probs * advantages)
+
+      # Critic損失
+      critic_loss = tf.reduce_mean(tf.square(advantages))
+
+      # 合計損失
+      loss = actor_loss + critic_loss
+
+    gradients = tape.gradient(loss, self.model.trainable_variables)
+    self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
   
 
-  def run(self, episodes=10, steps=100) -> None:
+  def reset(self):
     """
-    学習済みのモデルを使って行動を選択する
+    環境をリセット
     """
-    # episode loop
-    for episode in range(episodes):
-      state = self.env.reset() # 環境の初期化
-
-      # step loop
-      for step in range(steps):
-        action = self.policy() # 行動選択
-        next_state, reward, done, turncated, info = self.env.step(action) # 行動実行
-        td_error = self.log(state, action, reward, next_state, done) # ログ
-        self.learn(td_error) # TODO 学習
-        
-        # 終了条件
-        if done:
-          break
-
-  def learn(self, td_error):
-    """
-    TODO
-    学習
-    """
-    pass
-    # with tf.GradientTape() as tape:
-    #   action = self.model.call(state)
-    #   loss = self.loss(action, td_error)
-    # grads = tape.gradient(loss, self.model.trainable_variables)
-    # self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
+    self.state = self.env.reset()
   
 
-  def log(self, state, action, reward, next_state, done):
+  def save(self, file_path):
     """
-    TODO
-    state: dict
-    action: dict
-    reward: float
-    next_state: dict
-    done: bool
+    モデルの保存
     """
-    pass
-    # state_value = self.critic(state)
-    # next_state_value = self.critic(next_state)
-    # td_target = reward + self.gamma * next_state_value * (1 - done)
-    # td_error = td_target - state_value
-    # return td_error
+    self.model.save_weights(file_path)
+  
+
+  def load(self, file_path):
+    """
+    モデルのロード
+    """
+    self.model.load_weights(file_path)
   

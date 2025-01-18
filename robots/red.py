@@ -1,4 +1,4 @@
-from envs.group_behavior.group_behavior_strategy_env import GroupBehaviorStrategyEnv
+# from envs.group_behavior.group_behavior_strategy_env import GroupBehaviorStrategyEnv
 
 import pandas  as pd
 import numpy as np
@@ -25,7 +25,7 @@ class Red():
     def __init__(
             self,
             id: str,
-            env: GroupBehaviorStrategyEnv,
+            env,
             agent_position: np.array,
             x: float,
             y: float,
@@ -40,7 +40,7 @@ class Red():
         REDのコンストラクタ
         """
         self.id: str                        = id
-        self.env: GroupBehaviorStrategyEnv  = env
+        self.env                            = env
         self.agent_position: np.array       = agent_position
         self.step: int                      = step
         self.x: float                       = x
@@ -281,23 +281,58 @@ class Red():
             collision_stats: dict
               red_id: str
               count: int
-              mean: np.array
-              cov: np.array
+              mean: float
+              cov: float
         """
         collision_data = self.data[self.data['collision_flag'] == True]
+
+        # print(f"red: {self.id} | collision_data: {collision_data}")
+
+        collision_stats = {
+            'red_id': self.id,
+            'has_collisions': 0,
+            'count': 0,
+            'mean': 0.0,
+            'covariance': 0.0
+        }
 
         if not collision_data.empty:
             mean_y = collision_data['y'].mean()
             mean_x = collision_data['x'].mean()
 
-            covariance = collision_data[['y', 'x']].cov().values
+            # covariance = collision_data[['y', 'x']].cov().values
+            # 要素が2つ以上ある場合は共分散を計算
+            if len(collision_data) > 1:
+                covariance = abs(collision_data['y'].cov(collision_data['x'])) # 絶対値を使用
+            else:
+                covariance = 0
+
+            azimuth: float = 0.0
+            if mean_x != self.agent_position[1]:
+                vec_d = np.array([mean_y - self.agent_position[0], mean_x - self.agent_position[1]])
+                vec_x = np.array([0, mean_x - self.agent_position[1]])
+
+                azimuth = np.rad2deg(math.acos(vec_d @ vec_x / (np.linalg.norm(vec_d) * np.linalg.norm(vec_x))))
+            
+            if mean_x - self.agent_position[1] < 0:
+                if mean_y - self.agent_position[0] >= 0:
+                    azimuth = np.rad2deg(math.pi) - azimuth
+                else:
+                    azimuth += np.rad2deg(math.pi)
+            
+            else:
+                if mean_y - self.agent_position[0] < 0:
+                    azimuth = np.rad2deg(2.0 * math.pi) - azimuth
         
-        collision_stats = {
-            'red_id'  : self.id,
-            'count'   : collision_data.shape[0],
-            'mean'    : np.array([mean_y, mean_x]),
-            'cov'     : covariance
-        }
+            collision_stats = {
+                'red_id': self.id,
+                'has_collisions': 1,
+                'count': collision_data.shape[0],
+                'mean': azimuth,
+                'covariance': covariance
+            }
+        
+        # print(f"collision_stats: {collision_stats}")
 
         return collision_stats
         
