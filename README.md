@@ -1,5 +1,7 @@
 # group behavior strategy
 
+![frame_2999](https://github.com/user-attachments/assets/2ed8cc46-554e-4b1b-ae70-a7a0007ae89f)
+
 ## プロジェクト構成
 
 - `src/main.py`: アプリケーションのエントリーポイント。
@@ -39,5 +41,6 @@ Critic の損失: MSE(𝑅,𝑉(𝑠))
 環境からデータを収集し、Actor と Critic のネットワークを更新。
 
 ## やること
+- 画像やgifの保存場所の変更
 - 走行可能性の初期分布の低さの調整
 - 報酬の再設計
